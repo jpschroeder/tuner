@@ -20,16 +20,16 @@
 //    (dI/dt, dQ/dt) at the center block. The direct I and Q signals are delayed by
 //    2 blocks (256 samples, ~5.3 ms) to achieve perfect temporal synchronization.
 //
-// 4. In-Worklet Noise Gating & Dynamic Range Brightness Scaling:
-//    Noise floor evaluation and brightness scaling are computed directly inside
-//    the audio processor rather than deferred to the GPU shaders. The phasor
-//    magnitude is pre-scaled directly to visual brightness [0.0, 1.0], gating
-//    quiet channels to zero so inactive notes can be early-out skipped in WebGL.
+// 4. In-Worklet Noise Gating, Phase & Velocity Extraction:
+//    Noise floor evaluation, dynamic range brightness scaling, instantaneous phase
+//    (phi), and angular velocity (omega) are computed directly inside the audio
+//    processor rather than deferred to the GPU shaders. Visual brightness [0.0, 1.0]
+//    gates quiet channels to zero so inactive notes can be early-out skipped in WebGL.
 //
 // 5. Lock-Free Zero-Copy SharedArrayBuffer Transport:
-//    Outputs are published into a 128-block circular ring buffer in SharedArrayBuffer
-//    memory using Atomics.store(), allowing the main thread and WebGL to read the
-//    newest frames without CPU memory copies.
+//    Outputs [phi, omega, brightness, 0.0] are published into a 128-block circular
+//    ring buffer in SharedArrayBuffer memory using Atomics.store(), allowing the
+//    main thread and WebGL to read the newest frames without CPU memory copies.
 // ==============================================================================
 
 const TOTAL_CHANNELS = 96; // 8 octaves * 12 semitones
@@ -370,7 +370,7 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
         inv10dt;
 
       // ----------------------------------------------------------------------
-      // STEP 4: IN-PROCESSOR NOISE GATING & BRIGHTNESS MAGNITUDE SCALING
+      // STEP 4: IN-PROCESSOR NOISE GATING, BRIGHTNESS & PHASE/VELOCITY EXTRACTION
       // ----------------------------------------------------------------------
       // Calculate instantaneous power P = I^2 + Q^2
       const power = delayedI * delayedI + delayedQ * delayedQ;
@@ -396,13 +396,14 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
         ),
       );
 
-      // Pre-scale phasor (I, Q) and derivatives (dI, dQ) so phasor magnitude
-      // directly equals the perceived bar brightness [0.0, 1.0]
-      const scale = brightness / Math.sqrt(power);
-      this.float32View[outIdx + 0] = delayedI * scale;
-      this.float32View[outIdx + 1] = delayedQ * scale;
-      this.float32View[outIdx + 2] = dI * scale;
-      this.float32View[outIdx + 3] = dQ * scale;
+      // Calculate instantaneous phase (phi) and angular velocity (omega)
+      const phi = Math.atan2(delayedQ, delayedI);
+      const omega = (delayedI * dQ - delayedQ * dI) / power;
+
+      this.float32View[outIdx + 0] = phi;
+      this.float32View[outIdx + 1] = omega;
+      this.float32View[outIdx + 2] = brightness;
+      this.float32View[outIdx + 3] = 0.0;
     }
 
     // Atomically publish updated write index to notify main thread and WebGL renderer

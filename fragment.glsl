@@ -23,6 +23,7 @@
 //    When a note is vibrating or detuned, the strobe pattern rotates at angular
 //    velocity:
 //        omega = dPhi/dt = (I * dQ/dt - Q * dI/dt) / (I^2 + Q^2)
+//    which is calculated directly by the AudioWorklet and sampled by the shader.
 //    Instead of stochastic multi-sampling, the exact motion blur across time
 //    delta dt is computed by evaluating the closed-form definite integral of
 //    S(theta):
@@ -40,7 +41,7 @@
 //    circular indexing starting at u_headIndex:
 //        row = (u_headIndex - b + RING_BLOCKS) % RING_BLOCKS
 //    where b = 0 is the newest block and older blocks extend into the frame
-//    shutter window.
+//    shutter window. Each texel provides [phi, omega, brightness, unused].
 // ==============================================================================
 
 precision highp float;
@@ -49,7 +50,7 @@ in vec2 v_uv;
 out vec4 fragColor;
 
 // --- UNIFORMS ---
-// 96x128 RGBA32F texture storing [I, Q, dI/dt, dQ/dt] per channel per block
+// 96x128 RGBA32F texture storing [phi, omega, brightness, unused] per channel per block
 uniform sampler2D u_historyTex;
 uniform int
     u_numBlocks; // Number of audio blocks processed since previous render frame
@@ -208,27 +209,15 @@ void main() {
       // Circular buffer lookup going backwards from newest (b = 0) to oldest
       int row = (u_headIndex - b + RING_BLOCKS) % RING_BLOCKS;
 
-      // Fetch pre-scaled [I, Q, dI/dt, dQ/dt] for this channel at circular row
+      // Fetch [phi, omega, brightness, unused] for this channel at circular row
       vec4 data =
           texelFetch(u_historyTex, ivec2(layoutInfo.channelIdx, row), 0);
-      float I = data.r;
-      float Q = data.g;
-      float dI = data.b;
-      float dQ = data.a;
+      float phi = data.r;
+      float omega = data.g;
+      float brightness = data.b;
 
-      float power = I * I + Q * Q;
-      if (power < 1e-7)
+      if (brightness == 0.0)
         continue; // Signal below noise floor (pre-gated by worklet)
-
-      // Phasor magnitude was pre-scaled by audio processor to equal bar
-      // brightness [0.0, 1.0]
-      float brightness = sqrt(power);
-      // Instantaneous phase angle theta = atan2(Q, I)
-      float phi = atan(Q, I);
-
-      // Exact instantaneous angular velocity dPhi/dt from Savitzky-Golay
-      // derivatives: d/dt atan2(Q, I) = (I * dQ/dt - Q * dI/dt) / (I^2 + Q^2)
-      float omega = (I * dQ - Q * dI) / power;
 
       // Spatial phase of rotating strobe pattern at local position X:
       // theta(x) = numBars * 2*PI * localX - phi(t)
