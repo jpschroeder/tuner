@@ -123,25 +123,19 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       if (data.type === "setParams") {
         let needPitchUpdate = false;
         let needThresholdUpdate = false;
-        if (data.a4 !== undefined && data.a4 !== this.basePitch) {
+        if (data.a4 !== this.basePitch) {
           this.basePitch = data.a4;
           needPitchUpdate = true;
         }
-        if (data.cents !== undefined && data.cents !== this.centsOffset) {
+        if (data.cents !== this.centsOffset) {
           this.centsOffset = data.cents;
           needPitchUpdate = true;
         }
-        if (
-          data.sensitivity !== undefined &&
-          data.sensitivity !== this.sensitivityDb
-        ) {
+        if (data.sensitivity !== this.sensitivityDb) {
           this.sensitivityDb = data.sensitivity;
           needThresholdUpdate = true;
         }
-        if (
-          data.dynamicRange !== undefined &&
-          data.dynamicRange !== this.dynamicRangeDb
-        ) {
+        if (data.dynamicRange !== this.dynamicRangeDb) {
           this.dynamicRangeDb = data.dynamicRange;
           needThresholdUpdate = true;
         }

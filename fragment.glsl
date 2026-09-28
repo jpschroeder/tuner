@@ -23,10 +23,10 @@
 //    When a note is vibrating or detuned, the strobe pattern rotates at angular
 //    velocity:
 //        omega = dPhi/dt = (I * dQ/dt - Q * dI/dt) / (I^2 + Q^2)
-//    which is calculated directly by the AudioWorklet and sampled by the shader.
-//    Instead of stochastic multi-sampling, the exact motion blur across time
-//    delta dt is computed by evaluating the closed-form definite integral of
-//    S(theta):
+//    which is calculated directly by the AudioWorklet and sampled by the
+//    shader. Instead of stochastic multi-sampling, the exact motion blur across
+//    time delta dt is computed by evaluating the closed-form definite integral
+//    of S(theta):
 //        integral(S(theta) dtheta) = 0.5 * theta + 0.5 * (2/PI) *
 //        arcsin(sin(theta))
 //    Evaluating across [theta0, theta1] where dTheta = theta1 - theta0 = -omega
@@ -50,7 +50,8 @@ in vec2 v_uv;
 out vec4 fragColor;
 
 // --- UNIFORMS ---
-// 96x128 RGBA32F texture storing [phi, omega, brightness, unused] per channel per block
+// 96x128 RGBA32F texture storing [phi, omega, brightness, unused] per channel
+// per block
 uniform sampler2D u_historyTex;
 uniform int
     u_numBlocks; // Number of audio blocks processed since previous render frame
