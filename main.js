@@ -84,11 +84,13 @@ async function initWebGL() {
     return false;
   }
 
-  // Load external shader source files
+  // Load external shader source files concurrently
   let vsSource, fsSource;
   try {
-    vsSource = await loadShader("vertex.glsl");
-    fsSource = await loadShader("fragment.glsl");
+    [vsSource, fsSource] = await Promise.all([
+      loadShader("vertex.glsl"),
+      loadShader("fragment.glsl"),
+    ]);
   } catch (err) {
     console.error("Shader loading failed:", err);
     return false;
@@ -169,6 +171,10 @@ async function initWebGL() {
 
   gl.uniform1i(uHistoryTexLoc, 0);
 
+  // Set up window resize listener and perform initial sizing
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+
   return true;
 }
 
@@ -176,6 +182,7 @@ async function initWebGL() {
  * Handles canvas resizing and retina display pixel density scaling.
  */
 function resizeCanvas() {
+  if (!gl || !gl.canvas) return;
   const canvas = gl.canvas;
   const dpr = window.devicePixelRatio || 1;
   const displayWidth = Math.round(canvas.clientWidth * dpr);
@@ -194,8 +201,6 @@ function resizeCanvas() {
  * draws the motion-blurred strobe canvas.
  */
 function render() {
-  resizeCanvas();
-
   let numBlocksToRender = 0;
   let headIndex = 0;
   let dt = 128.0 / 48000.0;
@@ -249,13 +254,14 @@ function render() {
   requestAnimationFrame(render);
 }
 
+// Cached DOM references for UI controls
+const ui = {};
+
 /**
  * Requests microphone permission, instantiates the AudioContext and
  * AudioWorkletNode, allocates the SharedArrayBuffer, and begins processing.
  */
 async function startAudio() {
-  const startBtn = document.getElementById("start-btn");
-
   if (!window.crossOriginIsolated) {
     console.warn(
       "SharedArrayBuffer requires crossOriginIsolated. Ensure server is running with COOP/COEP.",
@@ -263,10 +269,10 @@ async function startAudio() {
   }
 
   try {
-    startBtn.disabled = true;
-    startBtn.textContent = "Starting...";
+    ui.startBtn.disabled = true;
+    ui.startBtn.textContent = "Starting...";
 
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+    audioCtx = new AudioContext({
       latencyHint: "interactive",
     });
 
@@ -285,13 +291,10 @@ async function startAudio() {
     );
 
     // Initial parameters from UI controls
-    const a4 = parseFloat(document.getElementById("a4-freq").value) || 440.0;
-    const cents =
-      parseFloat(document.getElementById("cents-offset").value) || 0.0;
-    const sensitivity =
-      parseFloat(document.getElementById("mic-sensitivity").value) || 0.0;
-    const dynamicRange =
-      parseFloat(document.getElementById("dynamic-range").value) || 30.0;
+    const a4 = ui.a4.valueAsNumber || 440.0;
+    const cents = ui.cents.valueAsNumber || 0.0;
+    const sensitivity = ui.sens.valueAsNumber || 0.0;
+    const dynamicRange = ui.dyn.valueAsNumber || 30.0;
 
     // Instantiate AudioWorkletNode, passing SharedArrayBuffer and parameters directly via processorOptions
     strobeNode = new AudioWorkletNode(audioCtx, "strobe-audio-processor", {
@@ -323,12 +326,12 @@ async function startAudio() {
     syncParams();
 
     isAudioRunning = true;
-    startBtn.textContent = "Audio Active";
+    ui.startBtn.textContent = "Audio Active";
   } catch (err) {
     console.error("Audio initialization failed:", err);
     alert("Could not start audio: " + err.message);
-    startBtn.disabled = false;
-    startBtn.textContent = "Start Audio";
+    ui.startBtn.disabled = false;
+    ui.startBtn.textContent = "Start Audio";
   }
 }
 
@@ -337,21 +340,18 @@ async function startAudio() {
  * from the HTML sliders to the AudioWorkletProcessor.
  */
 function syncParams() {
-  if (!strobeNode) return;
+  const a4 = ui.a4.valueAsNumber || 440.0;
+  const cents = ui.cents.valueAsNumber || 0.0;
+  const sensitivity = ui.sens.valueAsNumber || 0.0;
+  const dynamicRange = ui.dyn.valueAsNumber || 30.0;
 
-  const a4 = parseFloat(document.getElementById("a4-freq").value) || 440.0;
-  const cents =
-    parseFloat(document.getElementById("cents-offset").value) || 0.0;
-  const sensitivity =
-    parseFloat(document.getElementById("mic-sensitivity").value) || 0.0;
-  const dynamicRange =
-    parseFloat(document.getElementById("dynamic-range").value) || 30.0;
-
-  document.getElementById("cents-val").textContent =
+  ui.centsVal.textContent =
     cents > 0 ? `+${cents.toFixed(1)}` : cents.toFixed(1);
-  document.getElementById("sens-val").textContent =
+  ui.sensVal.textContent =
     sensitivity > 0 ? `+${sensitivity.toFixed(1)}` : sensitivity.toFixed(1);
-  document.getElementById("dyn-val").textContent = dynamicRange.toFixed(0);
+  ui.dynVal.textContent = dynamicRange.toFixed(0);
+
+  if (!strobeNode) return;
 
   strobeNode.port.postMessage({
     type: "setParams",
@@ -366,29 +366,42 @@ function syncParams() {
  * Binds UI event listeners for sliders and start button.
  */
 function setupUI() {
-  document.getElementById("start-btn").addEventListener("click", () => {
+  ui.startBtn = document.getElementById("start-btn");
+  ui.a4 = document.getElementById("a4-freq");
+  ui.cents = document.getElementById("cents-offset");
+  ui.sens = document.getElementById("mic-sensitivity");
+  ui.dyn = document.getElementById("dynamic-range");
+  ui.centsVal = document.getElementById("cents-val");
+  ui.sensVal = document.getElementById("sens-val");
+  ui.dynVal = document.getElementById("dyn-val");
+
+  ui.startBtn.addEventListener("click", () => {
     if (!isAudioRunning) {
       startAudio();
     }
   });
 
-  const controls = [
-    "a4-freq",
-    "cents-offset",
-    "mic-sensitivity",
-    "dynamic-range",
-  ];
-  controls.forEach((id) => {
-    const el = document.getElementById(id);
+  [ui.a4, ui.cents, ui.sens, ui.dyn].forEach((el) => {
     el.addEventListener("input", syncParams);
   });
 }
 
 // Bootstrap application on page load
-window.addEventListener("DOMContentLoaded", async () => {
-  setupUI();
-  const ok = await initWebGL();
-  if (ok) {
-    requestAnimationFrame(render);
-  }
-});
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("DOMContentLoaded", async () => {
+    setupUI();
+    const ok = await initWebGL();
+    if (ok) {
+      requestAnimationFrame(render);
+    }
+  });
+}
+
+/**
+ * Sets WebGL context for testing purposes.
+ */
+function setGL(context) {
+  gl = context;
+}
+
+export { resizeCanvas, setGL };

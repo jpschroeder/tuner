@@ -80,6 +80,11 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
     // --- FREQUENCY & NOISE FLOOR CONFIGURATION ---
     this.targetHzs = new Float32Array(this.numChannels);
     this.baseNoiseFloors = new Float32Array(this.numChannels);
+    // Pre-calculated linear power thresholds (P = I^2 + Q^2) and log constants
+    // for early-out noise gating without Math.sqrt or Math.log in the audio loop
+    this.powerFloor = new Float32Array(this.numChannels);
+    this.logPowerFloor = new Float32Array(this.numChannels);
+    this.invLogRange = 0.0;
 
     // Running envelope tracking for auto-scaling
     this.channelPeaks = new Float32Array(this.numChannels);
@@ -111,7 +116,7 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       Atomics.store(this.int32View, 4, RING_BLOCKS);
     }
 
-    // Initialize pitch frequencies and filter coefficients immediately
+    // Initialize pitch frequencies, filter coefficients, and thresholds immediately
     this.updatePitches(this.basePitch, this.centsOffset);
 
     // Listen for runtime parameter updates from UI sliders
@@ -121,6 +126,7 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
 
       if (data.type === "setParams") {
         let needPitchUpdate = false;
+        let needThresholdUpdate = false;
         if (data.a4 !== undefined && data.a4 !== this.basePitch) {
           this.basePitch = data.a4;
           needPitchUpdate = true;
@@ -129,17 +135,41 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
           this.centsOffset = data.cents;
           needPitchUpdate = true;
         }
-        if (data.sensitivity !== undefined) {
+        if (
+          data.sensitivity !== undefined &&
+          data.sensitivity !== this.sensitivityDb
+        ) {
           this.sensitivityDb = data.sensitivity;
+          needThresholdUpdate = true;
         }
-        if (data.dynamicRange !== undefined) {
+        if (
+          data.dynamicRange !== undefined &&
+          data.dynamicRange !== this.dynamicRangeDb
+        ) {
           this.dynamicRangeDb = data.dynamicRange;
+          needThresholdUpdate = true;
         }
         if (needPitchUpdate) {
           this.updatePitches(this.basePitch, this.centsOffset);
+        } else if (needThresholdUpdate) {
+          this.updateThresholds();
         }
       }
     };
+  }
+
+  /**
+   * Pre-calculates linear power floors (P = 10^(dB/10)) and logarithmic scaling
+   * factors. This allows the audio processing loop to gate inactive channels using
+   * a single compare against P = I^2 + Q^2, bypassing transcendental functions.
+   */
+  updateThresholds() {
+    this.invLogRange = 10.0 / (Math.max(1.0, this.dynamicRangeDb) * Math.LN10);
+    for (let k = 0; k < this.numChannels; k++) {
+      const floorDb = this.baseNoiseFloors[k] - this.sensitivityDb;
+      this.powerFloor[k] = Math.pow(10.0, floorDb / 10.0);
+      this.logPowerFloor[k] = Math.log(this.powerFloor[k]);
+    }
   }
 
   /**
@@ -208,6 +238,9 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       const octavesFromA4 = Math.log2(hz / basePitch);
       this.baseNoiseFloors[k] = -55.0 - 3.0 * octavesFromA4;
     }
+
+    // Update power thresholds and log scaling constants
+    this.updateThresholds();
   }
 
   process(inputs, outputs, parameters) {
@@ -339,47 +372,37 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       // ----------------------------------------------------------------------
       // STEP 4: IN-PROCESSOR NOISE GATING & BRIGHTNESS MAGNITUDE SCALING
       // ----------------------------------------------------------------------
-      // Calculate instantaneous power and decibel level relative to full scale:
-      const mag = Math.sqrt(delayedI * delayedI + delayedQ * delayedQ);
-      const db = mag > 1e-6 ? 20.0 * Math.log10(mag) : -120.0;
-
-      // Effective noise floor: default per-note curve offset by mic sensitivity slider.
-      // Higher sensitivity (positive dB) lowers the noise floor threshold.
-      const effectiveFloor = this.baseNoiseFloors[k] - this.sensitivityDb;
-      const range = Math.max(1.0, this.dynamicRangeDb);
-
-      let brightness = 0.0;
-      if (db > effectiveFloor) {
-        // Map dB level linearly across the configured dynamic range into [0.0, 1.0]
-        brightness = Math.min(
-          1.0,
-          Math.max(0.0, (db - effectiveFloor) / range),
-        );
-      }
-
-      // Pre-scale the (I, Q) phasor and derivatives so magnitude equals bar brightness.
-      // Signals below the noise floor are cleanly zeroed, keeping the shader simple.
-      let outI = 0.0;
-      let outQ = 0.0;
-      let outDI = 0.0;
-      let outDQ = 0.0;
-
-      if (brightness > 0.0 && mag > 1e-6) {
-        const scale = brightness / mag;
-        outI = delayedI * scale;
-        outQ = delayedQ * scale;
-        outDI = dI * scale;
-        outDQ = dQ * scale;
-      }
-
-      // ----------------------------------------------------------------------
-      // STEP 5: STORE IN ZERO-COPY SHAREDARRAYBUFFER RING SLOT
-      // ----------------------------------------------------------------------
+      // Calculate instantaneous power P = I^2 + Q^2
+      const power = delayedI * delayedI + delayedQ * delayedQ;
       const outIdx = ringSlot + k * 4;
-      this.float32View[outIdx + 0] = outI;
-      this.float32View[outIdx + 1] = outQ;
-      this.float32View[outIdx + 2] = outDI;
-      this.float32View[outIdx + 3] = outDQ;
+
+      // Early-out for channels below noise floor:
+      // Inactive notes skip Math.sqrt, Math.log, and division entirely
+      if (power <= this.powerFloor[k]) {
+        this.float32View[outIdx + 0] = 0.0;
+        this.float32View[outIdx + 1] = 0.0;
+        this.float32View[outIdx + 2] = 0.0;
+        this.float32View[outIdx + 3] = 0.0;
+        continue;
+      }
+
+      // Logarithmic dynamic range mapping for active notes:
+      // (dB - floorDb) / dynamicRange = (ln(P) - ln(P_floor)) * invLogRange
+      const brightness = Math.min(
+        1.0,
+        Math.max(
+          0.0,
+          (Math.log(power) - this.logPowerFloor[k]) * this.invLogRange,
+        ),
+      );
+
+      // Pre-scale phasor (I, Q) and derivatives (dI, dQ) so phasor magnitude
+      // directly equals the perceived bar brightness [0.0, 1.0]
+      const scale = brightness / Math.sqrt(power);
+      this.float32View[outIdx + 0] = delayedI * scale;
+      this.float32View[outIdx + 1] = delayedQ * scale;
+      this.float32View[outIdx + 2] = dI * scale;
+      this.float32View[outIdx + 3] = dQ * scale;
     }
 
     // Atomically publish updated write index to notify main thread and WebGL renderer

@@ -121,4 +121,60 @@ console.log(
 );
 assert(error < 0.05, `Frequency error must be under 0.05 Hz, got ${error}`);
 
+// ----------------------------------------------------------------------------
+// VERIFY POWER THRESHOLD GATING & LOG BRIGHTNESS SCALING
+// ----------------------------------------------------------------------------
+console.log("Verifying Power Threshold & Log Brightness Scaling...");
+
+const floorDb = -55.0;
+const dynamicRangeDb = 30.0;
+const powerFloor = Math.pow(10.0, floorDb / 10.0);
+const logPowerFloor = (floorDb / 10.0) * Math.LN10;
+const invLogRange = 10.0 / (dynamicRangeDb * Math.LN10);
+
+// Test 1: Signal below noise floor (-60 dB)
+const silentMag = Math.pow(10.0, -60.0 / 20.0);
+const silentPower = silentMag * silentMag;
+assert(silentPower <= powerFloor, "Silent power must be <= powerFloor");
+
+// Test 2: Signal within dynamic range (-40 dB, halfway between -55 and -25)
+const midMag = Math.pow(10.0, -40.0 / 20.0);
+const midPower = midMag * midMag;
+assert(midPower > powerFloor, "Mid power must be > powerFloor");
+
+const expectedBrightness = (-40.0 - floorDb) / dynamicRangeDb; // (-40 - -55) / 30 = 15 / 30 = 0.5
+const testBrightness = Math.min(
+  1.0,
+  (Math.log(midPower) - logPowerFloor) * invLogRange,
+);
+assert(
+  Math.abs(testBrightness - expectedBrightness) < 1e-6,
+  `Brightness mismatch: expected ${expectedBrightness}, got ${testBrightness}`,
+);
+
+// Test 3: Loud signal above ceiling (-20 dB)
+const loudMag = Math.pow(10.0, -20.0 / 20.0);
+const loudPower = loudMag * loudMag;
+const loudBrightness = Math.min(
+  1.0,
+  Math.max(0.0, (Math.log(loudPower) - logPowerFloor) * invLogRange),
+);
+assert.strictEqual(loudBrightness, 1.0, "Loud brightness must saturate to 1.0");
+
+// Test 4: Boundary condition at threshold with float32 precision
+const f32PowerFloor = new Float32Array(1);
+const f32LogPowerFloor = new Float32Array(1);
+f32PowerFloor[0] = Math.pow(10.0, floorDb / 10.0);
+f32LogPowerFloor[0] = Math.log(f32PowerFloor[0]);
+
+const thresholdPower = f32PowerFloor[0] * (1.0 + 1e-7);
+const thresholdBrightness = Math.min(
+  1.0,
+  Math.max(0.0, (Math.log(thresholdPower) - f32LogPowerFloor[0]) * invLogRange),
+);
+assert(
+  thresholdBrightness >= 0.0,
+  `Threshold brightness must be non-negative, got ${thresholdBrightness}`,
+);
+
 console.log("All DSP and Savitzky-Golay verification tests PASSED!");

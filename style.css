@@ -81,7 +81,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 140px;
+  width: 160px;
 }
 
 .control-group label {
