@@ -27,14 +27,15 @@
 //    shader. Instead of stochastic multi-sampling, the exact motion blur across
 //    time delta dt is computed by evaluating the closed-form definite integral
 //    of S(theta):
-//        integral(S(theta) dtheta) = 0.5 * theta + 0.5 * (2/PI) *
-//        arcsin(sin(theta))
+//        integral(S(theta) dtheta) = 0.5 * theta + PI * abs(fract(theta /
+//        TWO_PI - 0.25) - 0.5)
 //    Evaluating across [theta0, theta1] where dTheta = theta1 - theta0 = -omega
 //    * dt:
-//        Intensity = 0.5 + 0.5 * (2/PI) * (arcsin(sin(theta1)) -
-//        arcsin(sin(theta0))) / dTheta
+//        Intensity = 0.5 + PI * (abs(fract(theta1 / TWO_PI - 0.25) - 0.5) -
+//        abs(fract(theta0 / TWO_PI - 0.25) - 0.5)) / dTheta
 //    This yields perfectly continuous, anti-aliased motion blur without
-//    wagon-wheel strobing artifacts or temporal sampling noise.
+//    wagon-wheel strobing artifacts, temporal sampling noise, or trigonometric
+//    overhead (asin/sin).
 //
 // 3. Zero-Copy Circular Texture Sampling:
 //    Recent audio blocks are fetched from the 96x128 RGBA32F ring texture using
@@ -65,6 +66,7 @@ uniform vec2 u_resolution; // Canvas viewport resolution in physical pixels
 const int RING_BLOCKS = 128;
 const float PI = 3.14159265358979323846;
 const float TWO_PI = 6.28318530717958647692;
+const float INV_TWO_PI = 0.15915494309189533577;
 
 // Visual styling palette
 const vec3 COLOR_WHITE_KEY_BG =
@@ -229,17 +231,18 @@ void main() {
       float theta1 = theta0 + dTheta;
 
       // Analytically integrate 50% duty cycle square wave over interval
-      // [theta0, theta1]. The indefinite integral of sign(cos(x)) is (2/PI) *
-      // arcsin(sin(x)).
+      // [theta0, theta1] using fast triangle wave integration (avoiding
+      // asin/sin). The indefinite integral of sign(cos(x)) is TWO_PI *
+      // abs(fract(x / TWO_PI - 0.25) - 0.5).
       float barIntensity;
       if (abs(dTheta) < 1e-4) {
         // Stationary limit: perfectly in-tune or stationary pattern
         barIntensity = 0.5 + 0.5 * sign(cos(theta0));
       } else {
         // Continuous temporal average across the motion interval
-        float t0 = asin(clamp(sin(theta0), -1.0, 1.0));
-        float t1 = asin(clamp(sin(theta1), -1.0, 1.0));
-        barIntensity = 0.5 + 0.5 * (2.0 / PI) * (t1 - t0) / dTheta;
+        float t0 = abs(fract(theta0 * INV_TWO_PI - 0.25) - 0.5);
+        float t1 = abs(fract(theta1 * INV_TWO_PI - 0.25) - 0.5);
+        barIntensity = clamp(0.5 + PI * (t1 - t0) / dTheta, 0.0, 1.0);
       }
 
       totalStrobe += barIntensity * brightness;
