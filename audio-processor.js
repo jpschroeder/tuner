@@ -41,17 +41,15 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
 
-    const opts = options?.processorOptions || {};
+    const opts = options.processorOptions;
     this.numChannels = TOTAL_CHANNELS;
-    this.sampleRate =
-      opts.sampleRate ||
-      (typeof sampleRate !== "undefined" ? sampleRate : 48000);
+    this.sampleRate = opts.sampleRate;
 
     // Tuner parameters (initialized from processorOptions, updated via setParams)
-    this.basePitch = opts.a4 ?? 440.0; // Reference pitch for A4 in Hz
-    this.centsOffset = opts.cents ?? 0.0; // Global tuning offset in cents
-    this.sensitivityDb = opts.sensitivity ?? 0.0; // Mic sensitivity offset (lowers effective noise floor)
-    this.dynamicRangeDb = opts.dynamicRange ?? 30.0; // Dynamic range span for mapping dB to brightness
+    this.basePitch = opts.a4; // Reference pitch for A4 in Hz
+    this.centsOffset = opts.cents; // Global tuning offset in cents
+    this.sensitivityDb = opts.sensitivity; // Mic sensitivity offset (lowers effective noise floor)
+    this.dynamicRangeDb = opts.dynamicRange; // Dynamic range span for mapping dB to brightness
     this.peakDecay = 0.95;
 
     // --- OSCILLATOR STATES (COMPLEX LOCAL CARRIERS) ---
@@ -103,18 +101,16 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
     this.monoBuffer = new Float32Array(128);
 
     // SharedArrayBuffer lock-free synchronization initialized synchronously via processorOptions
-    this.sab = opts.sab || null;
-    this.int32View = this.sab ? new Int32Array(this.sab) : null;
-    this.float32View = this.sab ? new Float32Array(this.sab) : null;
+    this.sab = opts.sab;
+    this.int32View = new Int32Array(this.sab);
+    this.float32View = new Float32Array(this.sab);
     this.blockCounter = 0;
 
-    if (this.int32View) {
-      // Populate header fields in the SharedArrayBuffer
-      Atomics.store(this.int32View, 1, this.sampleRate);
-      Atomics.store(this.int32View, 2, 128); // Block size in samples
-      Atomics.store(this.int32View, 3, this.numChannels);
-      Atomics.store(this.int32View, 4, RING_BLOCKS);
-    }
+    // Populate header fields in the SharedArrayBuffer
+    Atomics.store(this.int32View, 1, this.sampleRate);
+    Atomics.store(this.int32View, 2, 128); // Block size in samples
+    Atomics.store(this.int32View, 3, this.numChannels);
+    Atomics.store(this.int32View, 4, RING_BLOCKS);
 
     // Initialize pitch frequencies, filter coefficients, and thresholds immediately
     this.updatePitches(this.basePitch, this.centsOffset);
@@ -177,8 +173,6 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
    * filter cutoffs, and default per-note noise floors.
    */
   updatePitches(basePitch, centsOffset) {
-    if (!this.sampleRate) return;
-
     // Bandwidth ratio for a 1st-order RC filter to achieve 15 dB attenuation at neighbor note:
     // Attenuation factor: sqrt(10^(15/10) - 1) = sqrt(31.62 - 1) = ~2.1502
     const REJECTION_FACTOR = Math.sqrt(Math.pow(10.0, 15.0 / 20.0) - 1.0);

@@ -208,7 +208,7 @@ function render() {
   if (int32View && historyDataView) {
     // Atomically read the block write counter published by the audio processor
     const currentWrite = Atomics.load(int32View, 0);
-    const sampleRate = Atomics.load(int32View, 1) || 48000;
+    const sampleRate = Atomics.load(int32View, 1);
     dt = 128.0 / sampleRate;
 
     const available = currentWrite - lastReadIndex;
@@ -291,10 +291,10 @@ async function startAudio() {
     );
 
     // Initial parameters from UI controls
-    const a4 = ui.a4.valueAsNumber || 440.0;
-    const cents = ui.cents.valueAsNumber || 0.0;
-    const sensitivity = ui.sens.valueAsNumber || 0.0;
-    const dynamicRange = ui.dyn.valueAsNumber || 30.0;
+    const a4 = ui.a4.valueAsNumber;
+    const cents = ui.cents.valueAsNumber;
+    const sensitivity = ui.sens.valueAsNumber;
+    const dynamicRange = ui.dyn.valueAsNumber;
 
     // Instantiate AudioWorkletNode, passing SharedArrayBuffer and parameters directly via processorOptions
     strobeNode = new AudioWorkletNode(audioCtx, "strobe-audio-processor", {
@@ -340,10 +340,10 @@ async function startAudio() {
  * from the HTML sliders to the AudioWorkletProcessor.
  */
 function syncParams() {
-  const a4 = ui.a4.valueAsNumber || 440.0;
-  const cents = ui.cents.valueAsNumber || 0.0;
-  const sensitivity = ui.sens.valueAsNumber || 0.0;
-  const dynamicRange = ui.dyn.valueAsNumber || 30.0;
+  const a4 = ui.a4.valueAsNumber;
+  const cents = ui.cents.valueAsNumber;
+  const sensitivity = ui.sens.valueAsNumber;
+  const dynamicRange = ui.dyn.valueAsNumber;
 
   ui.centsVal.textContent =
     cents > 0 ? `+${cents.toFixed(1)}` : cents.toFixed(1);
