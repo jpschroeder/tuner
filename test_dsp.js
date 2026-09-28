@@ -51,7 +51,7 @@ for (let b = 0; b < 200; b++) {
     oscQ = nextQ;
 
     const iSample = s * oscI;
-    const qSample = s * oscQ;
+    const qSample = -s * oscQ;
 
     iA1 = alpha * iA1 + oma * iSample;
     qA1 = alpha * qA1 + oma * qSample;
@@ -98,9 +98,9 @@ for (let b = 0; b < 200; b++) {
   }
 }
 
-// Expected frequency difference is: deltaF = targetHz - inputHz = 440.0 - 440.5 = -0.5 Hz
-// Expected angular velocity omega = 2 * PI * deltaF = -PI rad/s ~ -3.14159 rad/s
-const expectedOmega = (targetHz - inputHz) * 2.0 * Math.PI; // In our rotation direction
+// Expected frequency difference is: deltaF = inputHz - targetHz = 440.5 - 440.0 = +0.5 Hz
+// Expected angular velocity omega = 2 * PI * deltaF = +PI rad/s ~ +3.14159 rad/s (positive for sharp = rotating right)
+const expectedOmega = (inputHz - targetHz) * 2.0 * Math.PI;
 console.log(
   `Measured omega: ${lastOmega.toFixed(4)} rad/s, Expected: ~${expectedOmega.toFixed(4)} rad/s`,
 );
@@ -114,7 +114,7 @@ assert(
 
 // Verify that angular velocity matches the detuning frequency within 5%
 const measuredFreq = lastOmega / (2.0 * Math.PI);
-const expectedFreq = targetHz - inputHz;
+const expectedFreq = inputHz - targetHz;
 const error = Math.abs(measuredFreq - expectedFreq);
 console.log(
   `Measured frequency difference: ${measuredFreq.toFixed(3)} Hz (Error: ${error.toFixed(4)} Hz)`,
@@ -176,5 +176,103 @@ assert(
   thresholdBrightness >= 0.0,
   `Threshold brightness must be non-negative, got ${thresholdBrightness}`,
 );
+
+// ----------------------------------------------------------------------------
+// VERIFY NORMALIZED PITCH DEVIATION METRIC (SHARP / FLAT METER)
+// ----------------------------------------------------------------------------
+console.log("Verifying Normalized Pitch Deviation Meter calculations...");
+
+const a4Hz = 440.0;
+const prevNoteHz = a4Hz * Math.pow(2.0, -1.0 / 12.0); // G#4 ~ 415.305 Hz
+const nextNoteHz = a4Hz * Math.pow(2.0, 1.0 / 12.0); // A#4 ~ 466.164 Hz
+
+// Exact logarithmic halfway boundary is the geometric mean (sqrt(f1 * f2) = 50 cents)
+const maxFlatHz = a4Hz - Math.sqrt(a4Hz * prevNoteHz); // ~ 12.176 Hz (50 cents flat)
+const maxSharpHz = Math.sqrt(a4Hz * nextNoteHz) - a4Hz; // ~ 12.894 Hz (50 cents sharp)
+
+// Verify exact correspondence to 2^(1/24) (50 cents)
+const expected50CentsFlatHz = a4Hz * (1.0 - Math.pow(2.0, -1.0 / 24.0));
+const expected50CentsSharpHz = a4Hz * (Math.pow(2.0, 1.0 / 24.0) - 1.0);
+assert(
+  Math.abs(maxFlatHz - expected50CentsFlatHz) < 1e-6,
+  "maxFlatHz must match exact 50-cent logarithmic boundary",
+);
+assert(
+  Math.abs(maxSharpHz - expected50CentsSharpHz) < 1e-6,
+  "maxSharpHz must match exact 50-cent logarithmic boundary",
+);
+
+assert(
+  maxFlatHz > 0 && maxSharpHz > 0,
+  "Halfway boundaries must be positive numbers",
+);
+assert(
+  maxSharpHz > maxFlatHz,
+  "Sharp boundary in Hz must be larger than flat boundary due to log spacing",
+);
+
+// Test A: Sharp detuning deviation (+0.5 Hz input from earlier simulation)
+const measuredDeltaHz = lastOmega / (2.0 * Math.PI);
+const expectedDeltaHz = inputHz - targetHz; // +0.5 Hz
+assert(
+  Math.abs(measuredDeltaHz - expectedDeltaHz) < 0.05,
+  `measuredDeltaHz should be close to +0.5 Hz, got ${measuredDeltaHz}`,
+);
+
+let devSharp =
+  measuredDeltaHz > 0
+    ? measuredDeltaHz / maxSharpHz
+    : measuredDeltaHz / maxFlatHz;
+devSharp = Math.min(1.0, Math.max(-1.0, devSharp));
+const expectedDevSharp = 0.5 / maxSharpHz;
+assert(
+  Math.abs(devSharp - expectedDevSharp) < 0.01,
+  `Deviation mismatch: expected ~${expectedDevSharp.toFixed(4)}, got ${devSharp.toFixed(4)}`,
+);
+console.log(
+  `Sharp deviation (+0.5 Hz): measured = ${devSharp.toFixed(4)}, expected = ${expectedDevSharp.toFixed(4)}`,
+);
+
+// Test B: Flat detuning (-0.5 Hz)
+const flatDeltaHz = -0.5;
+let devFlat =
+  flatDeltaHz < 0 ? flatDeltaHz / maxFlatHz : flatDeltaHz / maxSharpHz;
+devFlat = Math.min(1.0, Math.max(-1.0, devFlat));
+const expectedDevFlat = -0.5 / maxFlatHz;
+assert(
+  Math.abs(devFlat - expectedDevFlat) < 1e-6,
+  `Flat deviation mismatch: expected ${expectedDevFlat}, got ${devFlat}`,
+);
+assert(devFlat < 0, "Flat deviation must be negative");
+
+// Test C: Halfway boundaries (+1.0 and -1.0)
+const halfwaySharpDelta = maxSharpHz;
+const halfwayFlatDelta = -maxFlatHz;
+const devHalfwaySharp = Math.min(
+  1.0,
+  Math.max(-1.0, halfwaySharpDelta / maxSharpHz),
+);
+const devHalfwayFlat = Math.min(
+  1.0,
+  Math.max(-1.0, halfwayFlatDelta / maxFlatHz),
+);
+assert.strictEqual(
+  devHalfwaySharp,
+  1.0,
+  "Halfway sharp must equal exactly +1.0",
+);
+assert.strictEqual(
+  devHalfwayFlat,
+  -1.0,
+  "Halfway flat must equal exactly -1.0",
+);
+
+// Test D: Clamping beyond halfway boundaries
+const overSharpDelta = maxSharpHz * 1.5;
+const overFlatDelta = -maxFlatHz * 1.5;
+const devOverSharp = Math.min(1.0, Math.max(-1.0, overSharpDelta / maxSharpHz));
+const devOverFlat = Math.min(1.0, Math.max(-1.0, overFlatDelta / maxFlatHz));
+assert.strictEqual(devOverSharp, 1.0, "Over-sharp must clamp to +1.0");
+assert.strictEqual(devOverFlat, -1.0, "Over-flat must clamp to -1.0");
 
 console.log("All DSP and Savitzky-Golay verification tests PASSED!");

@@ -20,14 +20,18 @@
 //    (dI/dt, dQ/dt) at the center block. The direct I and Q signals are delayed by
 //    2 blocks (256 samples, ~5.3 ms) to achieve perfect temporal synchronization.
 //
-// 4. In-Worklet Noise Gating, Phase & Velocity Extraction:
+// 4. In-Worklet Noise Gating, Phase, Velocity & Pitch Deviation Extraction:
 //    Noise floor evaluation, dynamic range brightness scaling, instantaneous phase
-//    (phi), and angular velocity (omega) are computed directly inside the audio
-//    processor rather than deferred to the GPU shaders. Visual brightness [0.0, 1.0]
-//    gates quiet channels to zero so inactive notes can be early-out skipped in WebGL.
+//    (phi), angular velocity (omega), and normalized pitch deviation ([-1.0, 1.0])
+//    are computed directly inside the audio processor rather than deferred to GPU shaders.
+//    - omega > 0 (sharp) / omega < 0 (flat) sets the drift direction.
+//    - Pitch Bleed Gate: Signals detuned by more than 50 cents (past halfway to adjacent
+//      notes, |rawDev| > 1.0) are gated out to 0.0 to prevent adjacent-note strobe artifacts.
+//    - Visual brightness [0.0, 1.0] gates quiet channels to zero so inactive notes can be
+//      early-out skipped in WebGL.
 //
 // 5. Lock-Free Zero-Copy SharedArrayBuffer Transport:
-//    Outputs [phi, omega, brightness, 0.0] are published into a 128-block circular
+//    Outputs [phi, omega, brightness, deviation] are published into a 128-block circular
 //    ring buffer in SharedArrayBuffer memory using Atomics.store(), allowing the
 //    main thread and WebGL to read the newest frames without CPU memory copies.
 // ==============================================================================
@@ -77,6 +81,8 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
 
     // --- FREQUENCY & NOISE FLOOR CONFIGURATION ---
     this.targetHzs = new Float32Array(this.numChannels);
+    this.maxSharpHz = new Float32Array(this.numChannels);
+    this.maxFlatHz = new Float32Array(this.numChannels);
     this.baseNoiseFloors = new Float32Array(this.numChannels);
     // Pre-calculated linear power thresholds (P = I^2 + Q^2) and log constants
     // for early-out noise gating without Math.sqrt or Math.log in the audio loop
@@ -191,6 +197,22 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       const prevHz = k > 0 ? this.targetHzs[k - 1] : 0;
       const nextHz = k < this.numChannels - 1 ? this.targetHzs[k + 1] : 0;
 
+      // Pitch deviation halfway boundaries to adjacent semitones:
+      // Halfway pitch boundary is the logarithmic midpoint:
+      // Flat midpoint = sqrt(targetHz * prevHz), Sharp midpoint = sqrt(targetHz * nextHz)
+      // Edge cases (C0 and B7) fall back to 12-TET 2^(1/24) 50-cent ratio
+      if (prevHz) {
+        this.maxFlatHz[k] = hz - Math.sqrt(hz * prevHz);
+      } else {
+        this.maxFlatHz[k] = hz * (1.0 - Math.pow(2.0, -1.0 / 24.0));
+      }
+
+      if (nextHz) {
+        this.maxSharpHz[k] = Math.sqrt(hz * nextHz) - hz;
+      } else {
+        this.maxSharpHz[k] = hz * (Math.pow(2.0, 1.0 / 24.0) - 1.0);
+      }
+
       // Determine frequency distance to adjacent semitones. Lower bass notes
       // have much narrower Hz intervals, requiring proportionately tighter filters.
       let minDist;
@@ -292,10 +314,11 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
         oI = nextI;
         oQ = nextQ;
 
-        // Multiply input audio by complex carrier e^(jwt).
-        // This shifts audio frequencies by -f_target, moving the target note to 0 Hz DC.
+        // Multiply input audio by complex conjugate carrier e^(-jwt).
+        // This shifts audio frequencies by -f_target, moving the target note to 0 Hz DC
+        // and producing positive angular velocity (omega > 0) when input is sharp.
         const iSample = s * oI;
-        const qSample = s * oQ;
+        const qSample = -s * oQ;
 
         // Stage 1 Lowpass Filter: removes high audio frequencies and upper carrier sideband
         iA1 = a * iA1 + oma * iSample;
@@ -394,10 +417,33 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       const phi = Math.atan2(delayedQ, delayedI);
       const omega = (delayedI * dQ - delayedQ * dI) / power;
 
+      // Calculate normalized pitch deviation:
+      // deltaHz = f_input - f_target = omega / (2 * PI)
+      // Deviation scale: 0.0 = in-tune, +1.0 = halfway to next sharp, -1.0 = halfway to prev flat
+      const deltaHz = omega / (2.0 * Math.PI);
+      let rawDev = 0.0;
+      if (deltaHz > 0.0 && this.maxSharpHz[k] > 0.0) {
+        rawDev = deltaHz / this.maxSharpHz[k];
+      } else if (deltaHz < 0.0 && this.maxFlatHz[k] > 0.0) {
+        rawDev = deltaHz / this.maxFlatHz[k];
+      }
+
+      // Pitch Bleed Gate: If the measured frequency is more than halfway to an adjacent note,
+      // it belongs to that note's channel instead. Gate it out as noise.
+      if (rawDev > 1.0 || rawDev < -1.0) {
+        this.float32View[outIdx + 0] = 0.0;
+        this.float32View[outIdx + 1] = 0.0;
+        this.float32View[outIdx + 2] = 0.0;
+        this.float32View[outIdx + 3] = 0.0;
+        continue;
+      }
+
+      const clampedDev = Math.min(1.0, Math.max(-1.0, rawDev));
+
       this.float32View[outIdx + 0] = phi;
       this.float32View[outIdx + 1] = omega;
       this.float32View[outIdx + 2] = brightness;
-      this.float32View[outIdx + 3] = 0.0;
+      this.float32View[outIdx + 3] = clampedDev;
     }
 
     // Atomically publish updated write index to notify main thread and WebGL renderer

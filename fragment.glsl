@@ -41,7 +41,7 @@
 //    circular indexing starting at u_headIndex:
 //        row = (u_headIndex - b + RING_BLOCKS) % RING_BLOCKS
 //    where b = 0 is the newest block and older blocks extend into the frame
-//    shutter window. Each texel provides [phi, omega, brightness, unused].
+//    shutter window. Each texel provides [phi, omega, brightness, deviation].
 // ==============================================================================
 
 precision highp float;
@@ -50,8 +50,8 @@ in vec2 v_uv;
 out vec4 fragColor;
 
 // --- UNIFORMS ---
-// 96x128 RGBA32F texture storing [phi, omega, brightness, unused] per channel
-// per block
+// 96x128 RGBA32F texture storing [phi, omega, brightness, deviation] per
+// channel per block
 uniform sampler2D u_historyTex;
 uniform int
     u_numBlocks; // Number of audio blocks processed since previous render frame
@@ -210,7 +210,8 @@ void main() {
       // Circular buffer lookup going backwards from newest (b = 0) to oldest
       int row = (u_headIndex - b + RING_BLOCKS) % RING_BLOCKS;
 
-      // Fetch [phi, omega, brightness, unused] for this channel at circular row
+      // Fetch [phi, omega, brightness, deviation] for this channel at circular
+      // row
       vec4 data =
           texelFetch(u_historyTex, ivec2(layoutInfo.channelIdx, row), 0);
       float phi = data.r;

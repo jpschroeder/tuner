@@ -5,7 +5,7 @@
 // 1. Lock-Free Zero-Copy Audio Pipeline:
 //    - The browser's AudioWorklet thread runs StrobeAudioProcessor, processing
 //      continuous blocks of 128 audio samples across 96 channels.
-//    - Each block writes [phi, omega, brightness, unused] for all 96 notes directly into a
+//    - Each block writes [phi, omega, brightness, deviation] for all 96 notes directly into a
 //      SharedArrayBuffer acting as a 128-block circular ring buffer.
 //    - The audio thread updates an atomic write counter via Atomics.store().
 //
@@ -143,7 +143,7 @@ async function initWebGL() {
   // Allocate 96x128 RGBA32F texture for the block history ring buffer
   // Width: 96 channels (one column per note)
   // Height: 128 rows (one row per audio block)
-  // Channels: R = phi, G = omega, B = brightness, A = unused
+  // Channels: R = phi, G = omega, B = brightness, A = deviation (normalized [-1.0, 1.0] pitch deviation)
   historyTexture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, historyTexture);
   gl.texImage2D(
