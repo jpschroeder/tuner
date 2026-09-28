@@ -98,7 +98,8 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
     this.historyQ = new Float32Array(this.numChannels * SG_BLOCKS);
 
     // Preallocated buffer for mono downmixing to prevent GC pauses on audio thread
-    this.monoBuffer = new Float32Array(128);
+    this.currentBlockLen = 0;
+    this.monoBuffer = new Float32Array(0);
 
     // SharedArrayBuffer lock-free synchronization initialized synchronously via processorOptions
     this.sab = opts.sab;
@@ -108,7 +109,6 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
 
     // Populate header fields in the SharedArrayBuffer
     Atomics.store(this.int32View, 1, this.sampleRate);
-    Atomics.store(this.int32View, 2, 128); // Block size in samples
     Atomics.store(this.int32View, 3, this.numChannels);
     Atomics.store(this.int32View, 4, RING_BLOCKS);
 
@@ -246,6 +246,12 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
     const right = input[1] || left;
     const blockLen = left.length;
 
+    // Dynamically update SharedArrayBuffer header if render quantum / block length changes
+    if (this.currentBlockLen !== blockLen) {
+      this.currentBlockLen = blockLen;
+      Atomics.store(this.int32View, 2, blockLen);
+    }
+
     // Downmix stereo input to mono. Reusing monoBuffer avoids heap allocations in the audio thread.
     if (this.monoBuffer.length < blockLen) {
       this.monoBuffer = new Float32Array(blockLen);
@@ -254,7 +260,7 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       this.monoBuffer[i] = (left[i] + right[i]) * 0.5;
     }
 
-    // Time interval represented by one audio block: dt = 128 / fs
+    // Time interval represented by one audio block: dt = blockLen / fs
     const dt = blockLen / this.sampleRate;
     // Pre-factor for Savitzky-Golay 1st derivative: 1 / (10 * dt)
     const inv10dt = 1.0 / (10.0 * dt);

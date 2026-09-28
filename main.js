@@ -203,13 +203,14 @@ function resizeCanvas() {
 function render() {
   let numBlocksToRender = 0;
   let headIndex = 0;
-  let dt = 128.0 / 48000.0;
+  let dt = 0;
 
   if (int32View && historyDataView) {
     // Atomically read the block write counter published by the audio processor
     const currentWrite = Atomics.load(int32View, 0);
     const sampleRate = Atomics.load(int32View, 1);
-    dt = 128.0 / sampleRate;
+    const blockSize = Atomics.load(int32View, 2);
+    dt = blockSize / sampleRate;
 
     const available = currentWrite - lastReadIndex;
     if (available > 0) {
