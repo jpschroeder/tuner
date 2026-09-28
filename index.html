@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Digital Strobe Tuner</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Digital Strobe Tuner</h1>
+        <button id="start-btn">Start Audio</button>
+      </header>
+
+      <div class="controls-panel">
+        <div class="control-group">
+          <label for="a4-freq">A4 Reference (Hz):</label>
+          <input
+            type="number"
+            id="a4-freq"
+            min="400"
+            max="480"
+            step="0.1"
+            value="440.0"
+          />
+        </div>
+
+        <div class="control-group">
+          <label for="cents-offset"
+            >Cents Offset: <span id="cents-val">0.0</span></label
+          >
+          <input
+            type="range"
+            id="cents-offset"
+            min="-50"
+            max="50"
+            step="0.5"
+            value="0.0"
+          />
+        </div>
+
+        <div class="control-group">
+          <label for="mic-sensitivity"
+            >Mic Sensitivity (dB): <span id="sens-val">0.0</span></label
+          >
+          <input
+            type="range"
+            id="mic-sensitivity"
+            min="-30"
+            max="30"
+            step="0.5"
+            value="0.0"
+          />
+        </div>
+
+        <div class="control-group">
+          <label for="dynamic-range"
+            >Dynamic Range: <span id="dyn-val">30</span> dB</label
+          >
+          <input
+            type="range"
+            id="dynamic-range"
+            min="6"
+            max="60"
+            step="1"
+            value="30"
+          />
+        </div>
+      </div>
+
+      <div class="canvas-container">
+        <canvas id="strobe-canvas"></canvas>
+      </div>
+    </div>
+
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

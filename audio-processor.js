@@ -1,0 +1,393 @@
+// audio-processor.js - 96-Channel Strobe Tuner AudioWorkletProcessor
+//
+// ==============================================================================
+// ARCHITECTURE OVERVIEW:
+// 1. Continuous 96-channel Heterodyning:
+//    Incoming audio is mixed down to mono and multiplied simultaneously by 96
+//    quadrature carrier oscillators (cosine & sine) at target note frequencies
+//    spanning 8 octaves (C0 through B7). This translates the target frequency band
+//    down to 0 Hz (Baseband DC).
+//
+// 2. Cascaded 2-Stage Dynamic Lowpass Filtering:
+//    Each channel applies two cascaded 1st-order IIR filters to both I and Q
+//    streams. Dynamic cutoff bandwidths are calculated from adjacent semitone
+//    spacings using a 15 dB rejection factor, giving a steep 2nd-order (12 dB/oct)
+//    rolloff that isolates closely spaced low-frequency notes.
+//
+// 3. Savitzky-Golay 2nd-Order Derivative Filtering:
+//    A 5-block window (640 audio samples total) is tracked for each channel.
+//    A 2nd-order polynomial least-squares fit calculates the smoothed 1st derivatives
+//    (dI/dt, dQ/dt) at the center block. The direct I and Q signals are delayed by
+//    2 blocks (256 samples, ~5.3 ms) to achieve perfect temporal synchronization.
+//
+// 4. In-Worklet Noise Gating & Dynamic Range Brightness Scaling:
+//    Noise floor evaluation and brightness scaling are computed directly inside
+//    the audio processor rather than deferred to the GPU shaders. The phasor
+//    magnitude is pre-scaled directly to visual brightness [0.0, 1.0], gating
+//    quiet channels to zero so inactive notes can be early-out skipped in WebGL.
+//
+// 5. Lock-Free Zero-Copy SharedArrayBuffer Transport:
+//    Outputs are published into a 128-block circular ring buffer in SharedArrayBuffer
+//    memory using Atomics.store(), allowing the main thread and WebGL to read the
+//    newest frames without CPU memory copies.
+// ==============================================================================
+
+const TOTAL_CHANNELS = 96; // 8 octaves * 12 semitones
+const SG_BLOCKS = 5; // 5-block window for 2nd-order Savitzky-Golay filter
+const RING_BLOCKS = 128; // Circular ring buffer capacity in audio blocks
+const HEADER_SIZE = 16; // 16 Int32/Float32 slots reserved for atomic metadata
+
+class StrobeAudioProcessor extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+
+    const opts = options?.processorOptions || {};
+    this.numChannels = TOTAL_CHANNELS;
+    this.sampleRate =
+      opts.sampleRate ||
+      (typeof sampleRate !== "undefined" ? sampleRate : 48000);
+
+    // Tuner parameters (initialized from processorOptions, updated via setParams)
+    this.basePitch = opts.a4 ?? 440.0; // Reference pitch for A4 in Hz
+    this.centsOffset = opts.cents ?? 0.0; // Global tuning offset in cents
+    this.sensitivityDb = opts.sensitivity ?? 0.0; // Mic sensitivity offset (lowers effective noise floor)
+    this.dynamicRangeDb = opts.dynamicRange ?? 30.0; // Dynamic range span for mapping dB to brightness
+    this.peakDecay = 0.95;
+
+    // --- OSCILLATOR STATES (COMPLEX LOCAL CARRIERS) ---
+    // Complex oscillator states: oscI + j*oscQ (initialized to unit vector 1 + 0j)
+    this.oscI = new Float32Array(this.numChannels);
+    this.oscQ = new Float32Array(this.numChannels);
+    // Pre-calculated rotation step constants: cos(phaseStep) and sin(phaseStep)
+    this.cosStep = new Float32Array(this.numChannels);
+    this.sinStep = new Float32Array(this.numChannels);
+    for (let k = 0; k < this.numChannels; k++) {
+      this.oscI[k] = 1.0;
+      this.oscQ[k] = 0.0;
+    }
+
+    // --- 2-STAGE CASCADED LOWPASS FILTER ACCUMULATORS ---
+    // Cascading two 1st-order IIR filters yields a 2nd-order filter with
+    // -12 dB/octave attenuation, suppressing the upper heterodyne sidebands (2*fc)
+    // and neighboring semitones.
+    this.iAcc1 = new Float32Array(this.numChannels);
+    this.qAcc1 = new Float32Array(this.numChannels);
+    this.iAcc2 = new Float32Array(this.numChannels);
+    this.qAcc2 = new Float32Array(this.numChannels);
+    this.alpha = new Float32Array(this.numChannels);
+    this.oneMinusAlpha = new Float32Array(this.numChannels);
+
+    // --- FREQUENCY & NOISE FLOOR CONFIGURATION ---
+    this.targetHzs = new Float32Array(this.numChannels);
+    this.baseNoiseFloors = new Float32Array(this.numChannels);
+
+    // Running envelope tracking for auto-scaling
+    this.channelPeaks = new Float32Array(this.numChannels);
+
+    // --- SAVITZKY-GOLAY HISTORY BUFFERS ---
+    // Tracks the last 5 block values of I and Q for each channel (5 * 96 elements).
+    // Index 0: 4 blocks ago (t = -2)
+    // Index 1: 3 blocks ago (t = -1)
+    // Index 2: 2 blocks ago (t =  0, center / delayed output point)
+    // Index 3: 1 block ago  (t = +1)
+    // Index 4: Current block(t = +2)
+    this.historyI = new Float32Array(this.numChannels * SG_BLOCKS);
+    this.historyQ = new Float32Array(this.numChannels * SG_BLOCKS);
+
+    // Preallocated buffer for mono downmixing to prevent GC pauses on audio thread
+    this.monoBuffer = new Float32Array(128);
+
+    // SharedArrayBuffer lock-free synchronization initialized synchronously via processorOptions
+    this.sab = opts.sab || null;
+    this.int32View = this.sab ? new Int32Array(this.sab) : null;
+    this.float32View = this.sab ? new Float32Array(this.sab) : null;
+    this.blockCounter = 0;
+
+    if (this.int32View) {
+      // Populate header fields in the SharedArrayBuffer
+      Atomics.store(this.int32View, 1, this.sampleRate);
+      Atomics.store(this.int32View, 2, 128); // Block size in samples
+      Atomics.store(this.int32View, 3, this.numChannels);
+      Atomics.store(this.int32View, 4, RING_BLOCKS);
+    }
+
+    // Initialize pitch frequencies and filter coefficients immediately
+    this.updatePitches(this.basePitch, this.centsOffset);
+
+    // Listen for runtime parameter updates from UI sliders
+    this.port.onmessage = (event) => {
+      const data = event.data;
+      if (!data) return;
+
+      if (data.type === "setParams") {
+        let needPitchUpdate = false;
+        if (data.a4 !== undefined && data.a4 !== this.basePitch) {
+          this.basePitch = data.a4;
+          needPitchUpdate = true;
+        }
+        if (data.cents !== undefined && data.cents !== this.centsOffset) {
+          this.centsOffset = data.cents;
+          needPitchUpdate = true;
+        }
+        if (data.sensitivity !== undefined) {
+          this.sensitivityDb = data.sensitivity;
+        }
+        if (data.dynamicRange !== undefined) {
+          this.dynamicRangeDb = data.dynamicRange;
+        }
+        if (needPitchUpdate) {
+          this.updatePitches(this.basePitch, this.centsOffset);
+        }
+      }
+    };
+  }
+
+  /**
+   * Recalculates all 96 target frequencies, oscillator phase steps, dynamic
+   * filter cutoffs, and default per-note noise floors.
+   */
+  updatePitches(basePitch, centsOffset) {
+    if (!this.sampleRate) return;
+
+    // Bandwidth ratio for a 1st-order RC filter to achieve 15 dB attenuation at neighbor note:
+    // Attenuation factor: sqrt(10^(15/10) - 1) = sqrt(31.62 - 1) = ~2.1502
+    const REJECTION_FACTOR = Math.sqrt(Math.pow(10.0, 15.0 / 20.0) - 1.0);
+
+    // 1. Calculate precise target frequencies across 8 octaves (C0 to B7)
+    for (let k = 0; k < this.numChannels; k++) {
+      const noteIdx = k % 12; // 0: C, 1: C#, ..., 9: A, 11: B
+      const oct = Math.floor(k / 12); // Octave index (0 to 7)
+
+      // Equal temperament frequency relative to A4 (octave 4, note 9):
+      // f = basePitch * 2^((oct - 4) + (noteIdx - 9) / 12)
+      const baseHz = basePitch * Math.pow(2.0, oct - 4 + (noteIdx - 9) / 12.0);
+
+      // Apply cents offset: f_tuned = baseHz * 2^(cents / 1200)
+      const hz = baseHz * Math.pow(2.0, centsOffset / 1200.0);
+      this.targetHzs[k] = hz;
+    }
+
+    // 2. Set dynamic lowpass filter bandwidths and oscillator phase steps
+    for (let k = 0; k < this.numChannels; k++) {
+      const hz = this.targetHzs[k];
+      const prevHz = k > 0 ? this.targetHzs[k - 1] : 0;
+      const nextHz = k < this.numChannels - 1 ? this.targetHzs[k + 1] : 0;
+
+      // Determine frequency distance to adjacent semitones. Lower bass notes
+      // have much narrower Hz intervals, requiring proportionately tighter filters.
+      let minDist;
+      if (prevHz && nextHz) {
+        minDist = Math.min(hz - prevHz, nextHz - hz);
+      } else if (prevHz) {
+        minDist = hz - prevHz;
+      } else if (nextHz) {
+        minDist = nextHz - hz;
+      } else {
+        // Fallback approximation: 1 semitone down = hz * (1 - 2^(-1/12))
+        minDist = hz * (1.0 - Math.pow(2.0, -1.0 / 12.0));
+      }
+
+      // Dynamic cutoff frequency: clamp between 0.5 Hz (prevents stalling) and 25 Hz
+      const cutoffHz = Math.min(
+        25.0,
+        Math.max(0.5, minDist / REJECTION_FACTOR),
+      );
+
+      // Oscillator phase increment per sample in radians: omega * dt = 2*PI*f / fs
+      const phaseStep = (2.0 * Math.PI * hz) / this.sampleRate;
+      this.cosStep[k] = Math.cos(phaseStep);
+      this.sinStep[k] = Math.sin(phaseStep);
+
+      // Standard 1st-order IIR lowpass smoothing factor: alpha = exp(-2*PI*fc / fs)
+      // y[n] = alpha * y[n-1] + (1 - alpha) * x[n]
+      this.alpha[k] = Math.exp((-2.0 * Math.PI * cutoffHz) / this.sampleRate);
+      this.oneMinusAlpha[k] = 1.0 - this.alpha[k];
+
+      // Physical room & mic noise curves follow 1/f spectral density (pink noise).
+      // Base floor is -55 dB for A4, sloping by -3 dB per octave higher:
+      const octavesFromA4 = Math.log2(hz / basePitch);
+      this.baseNoiseFloors[k] = -55.0 - 3.0 * octavesFromA4;
+    }
+  }
+
+  process(inputs, outputs, parameters) {
+    const input = inputs[0];
+    if (!input || !input[0] || input[0].length === 0) return true;
+    if (!this.float32View) return true; // SAB not yet attached
+
+    const left = input[0];
+    const right = input[1] || left;
+    const blockLen = left.length;
+
+    // Downmix stereo input to mono. Reusing monoBuffer avoids heap allocations in the audio thread.
+    if (this.monoBuffer.length < blockLen) {
+      this.monoBuffer = new Float32Array(blockLen);
+    }
+    for (let i = 0; i < blockLen; i++) {
+      this.monoBuffer[i] = (left[i] + right[i]) * 0.5;
+    }
+
+    // Time interval represented by one audio block: dt = 128 / fs
+    const dt = blockLen / this.sampleRate;
+    // Pre-factor for Savitzky-Golay 1st derivative: 1 / (10 * dt)
+    const inv10dt = 1.0 / (10.0 * dt);
+
+    // Compute circular slot offset in SharedArrayBuffer for this block
+    const ringSlot =
+      (this.blockCounter % RING_BLOCKS) * (this.numChannels * 4) + HEADER_SIZE;
+
+    // Process all 96 notes concurrently
+    for (let k = 0; k < this.numChannels; k++) {
+      const cS = this.cosStep[k];
+      const sS = this.sinStep[k];
+      const a = this.alpha[k];
+      const oma = this.oneMinusAlpha[k];
+
+      let oI = this.oscI[k];
+      let oQ = this.oscQ[k];
+      let iA1 = this.iAcc1[k];
+      let qA1 = this.qAcc1[k];
+      let iA2 = this.iAcc2[k];
+      let qA2 = this.qAcc2[k];
+
+      // ----------------------------------------------------------------------
+      // STEP 1: HETERODYNING & 2-STAGE CASCADED IIR LOWPASS FILTERING
+      // ----------------------------------------------------------------------
+      for (let i = 0; i < blockLen; i++) {
+        const s = this.monoBuffer[i];
+
+        // Advance complex oscillator using 2D rotation matrix:
+        // [cos -sin] [oI]
+        // [sin  cos] [oQ]
+        // This avoids calling expensive Math.sin() and Math.cos() per audio sample.
+        const nextI = oI * cS - oQ * sS;
+        const nextQ = oI * sS + oQ * cS;
+        oI = nextI;
+        oQ = nextQ;
+
+        // Multiply input audio by complex carrier e^(jwt).
+        // This shifts audio frequencies by -f_target, moving the target note to 0 Hz DC.
+        const iSample = s * oI;
+        const qSample = s * oQ;
+
+        // Stage 1 Lowpass Filter: removes high audio frequencies and upper carrier sideband
+        iA1 = a * iA1 + oma * iSample;
+        qA1 = a * qA1 + oma * qSample;
+
+        // Stage 2 Lowpass Filter: cascaded for steeper 2nd-order rolloff (-12 dB/octave)
+        iA2 = a * iA2 + oma * iA1;
+        qA2 = a * qA2 + oma * qA1;
+      }
+
+      // Re-normalize oscillator to prevent cumulative floating-point magnitude drift
+      const magOsc = Math.sqrt(oI * oI + oQ * oQ);
+      if (magOsc > 1e-6) {
+        const invMag = 1.0 / magOsc;
+        oI *= invMag;
+        oQ *= invMag;
+      } else {
+        oI = 1.0;
+        oQ = 0.0;
+      }
+      this.oscI[k] = oI;
+      this.oscQ[k] = oQ;
+      this.iAcc1[k] = iA1;
+      this.qAcc1[k] = qA1;
+      this.iAcc2[k] = iA2;
+      this.qAcc2[k] = qA2;
+
+      // ----------------------------------------------------------------------
+      // STEP 2: SAVITZKY-GOLAY 5-BLOCK HISTORY SHIFT
+      // ----------------------------------------------------------------------
+      // Shift older block samples back by 1 slot and place current block at index 4
+      const hOffset = k * SG_BLOCKS;
+      this.historyI[hOffset + 0] = this.historyI[hOffset + 1];
+      this.historyI[hOffset + 1] = this.historyI[hOffset + 2];
+      this.historyI[hOffset + 2] = this.historyI[hOffset + 3];
+      this.historyI[hOffset + 3] = this.historyI[hOffset + 4];
+      this.historyI[hOffset + 4] = iA2;
+
+      this.historyQ[hOffset + 0] = this.historyQ[hOffset + 1];
+      this.historyQ[hOffset + 1] = this.historyQ[hOffset + 2];
+      this.historyQ[hOffset + 2] = this.historyQ[hOffset + 3];
+      this.historyQ[hOffset + 3] = this.historyQ[hOffset + 4];
+      this.historyQ[hOffset + 4] = qA2;
+
+      // ----------------------------------------------------------------------
+      // STEP 3: DERIVATIVE & DELAY MATCHING
+      // ----------------------------------------------------------------------
+      // Delayed direct I and Q: Taken at center index 2 (delayed by 2 blocks = 256 samples).
+      const delayedI = this.historyI[hOffset + 2];
+      const delayedQ = this.historyQ[hOffset + 2];
+
+      // Savitzky-Golay 1st derivative coefficients for 5 points, 2nd-order polynomial:
+      // c = [-2, -1, 0, 1, 2] / (10 * dt)
+      // Evaluating at the center point (t = 0) gives the smoothed derivative dy/dt:
+      const dI =
+        (-2.0 * this.historyI[hOffset + 0] -
+          this.historyI[hOffset + 1] +
+          this.historyI[hOffset + 3] +
+          2.0 * this.historyI[hOffset + 4]) *
+        inv10dt;
+      const dQ =
+        (-2.0 * this.historyQ[hOffset + 0] -
+          this.historyQ[hOffset + 1] +
+          this.historyQ[hOffset + 3] +
+          2.0 * this.historyQ[hOffset + 4]) *
+        inv10dt;
+
+      // ----------------------------------------------------------------------
+      // STEP 4: IN-PROCESSOR NOISE GATING & BRIGHTNESS MAGNITUDE SCALING
+      // ----------------------------------------------------------------------
+      // Calculate instantaneous power and decibel level relative to full scale:
+      const mag = Math.sqrt(delayedI * delayedI + delayedQ * delayedQ);
+      const db = mag > 1e-6 ? 20.0 * Math.log10(mag) : -120.0;
+
+      // Effective noise floor: default per-note curve offset by mic sensitivity slider.
+      // Higher sensitivity (positive dB) lowers the noise floor threshold.
+      const effectiveFloor = this.baseNoiseFloors[k] - this.sensitivityDb;
+      const range = Math.max(1.0, this.dynamicRangeDb);
+
+      let brightness = 0.0;
+      if (db > effectiveFloor) {
+        // Map dB level linearly across the configured dynamic range into [0.0, 1.0]
+        brightness = Math.min(
+          1.0,
+          Math.max(0.0, (db - effectiveFloor) / range),
+        );
+      }
+
+      // Pre-scale the (I, Q) phasor and derivatives so magnitude equals bar brightness.
+      // Signals below the noise floor are cleanly zeroed, keeping the shader simple.
+      let outI = 0.0;
+      let outQ = 0.0;
+      let outDI = 0.0;
+      let outDQ = 0.0;
+
+      if (brightness > 0.0 && mag > 1e-6) {
+        const scale = brightness / mag;
+        outI = delayedI * scale;
+        outQ = delayedQ * scale;
+        outDI = dI * scale;
+        outDQ = dQ * scale;
+      }
+
+      // ----------------------------------------------------------------------
+      // STEP 5: STORE IN ZERO-COPY SHAREDARRAYBUFFER RING SLOT
+      // ----------------------------------------------------------------------
+      const outIdx = ringSlot + k * 4;
+      this.float32View[outIdx + 0] = outI;
+      this.float32View[outIdx + 1] = outQ;
+      this.float32View[outIdx + 2] = outDI;
+      this.float32View[outIdx + 3] = outDQ;
+    }
+
+    // Atomically publish updated write index to notify main thread and WebGL renderer
+    this.blockCounter++;
+    Atomics.store(this.int32View, 0, this.blockCounter);
+
+    return true;
+  }
+}
+
+registerProcessor("strobe-audio-processor", StrobeAudioProcessor);

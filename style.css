@@ -1,0 +1,120 @@
+:root {
+  --bg-color: #121212;
+  --panel-bg: #1e1e1e;
+  --text-color: #e0e0e0;
+  --accent-color: #00e676;
+  --accent-active: #00b359;
+  --border-color: #333333;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  gap: 16px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+button {
+  background-color: var(--accent-color);
+  color: #000;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+button:hover {
+  background-color: var(--accent-active);
+}
+
+button:disabled {
+  background-color: #555;
+  cursor: not-allowed;
+}
+
+.controls-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  background-color: var(--panel-bg);
+  padding: 12px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+}
+
+.control-group label {
+  font-size: 0.8rem;
+  color: #aaa;
+}
+
+.control-group input[type="number"] {
+  background: #2a2a2a;
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.control-group input[type="range"] {
+  accent-color: var(--accent-color);
+}
+
+.canvas-container {
+  flex: 1;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background: #000;
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
