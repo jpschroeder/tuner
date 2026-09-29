@@ -390,12 +390,22 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       // STEP 4: IN-PROCESSOR NOISE GATING, BRIGHTNESS & PHASE/VELOCITY EXTRACTION
       // ----------------------------------------------------------------------
       // Calculate instantaneous power P = I^2 + Q^2
-      const power = delayedI * delayedI + delayedQ * delayedQ;
+      // const power = delayedI * delayedI + delayedQ * delayedQ;
+
+      // Calculate smoothed power P = I^2 + Q^2 over the same 5 points as the Savitzky-Golay filter
+      let sumPower = 0.0;
+      for (let j = 0; j < SG_BLOCKS; j++) {
+        const hI = this.historyI[hOffset + j];
+        const hQ = this.historyQ[hOffset + j];
+        sumPower += hI * hI + hQ * hQ;
+      }
+      const smoothPower = sumPower * 0.2; // Divide by 5
+
       const outIdx = ringSlot + k * 4;
 
       // Early-out for channels below noise floor:
       // Inactive notes skip Math.sqrt, Math.log, and division entirely
-      if (power <= this.powerFloor[k]) {
+      if (smoothPower <= this.powerFloor[k]) {
         this.float32View[outIdx + 0] = 0.0;
         this.float32View[outIdx + 1] = 0.0;
         this.float32View[outIdx + 2] = 0.0;
@@ -409,13 +419,13 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
         1.0,
         Math.max(
           0.0,
-          (Math.log(power) - this.logPowerFloor[k]) * this.invLogRange,
+          (Math.log(smoothPower) - this.logPowerFloor[k]) * this.invLogRange,
         ),
       );
 
       // Calculate instantaneous phase (phi) and angular velocity (omega)
       const phi = Math.atan2(delayedQ, delayedI);
-      const omega = (delayedI * dQ - delayedQ * dI) / power;
+      const omega = (delayedI * dQ - delayedQ * dI) / smoothPower;
 
       // Calculate normalized pitch deviation:
       // deltaHz = f_input - f_target = omega / (2 * PI)
