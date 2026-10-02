@@ -174,6 +174,22 @@ LayoutInfo getLayout(vec2 uv) {
   return info;
 }
 
+/**
+ * Calculates an anti-aliased border mask for a note cell, applying independent
+ * X and Y thresholds to compensate for the non-square aspect ratio of the layout grid.
+ */
+float getBorderMask(float localX, float octFrac) {
+  float borderDistX = min(localX, 1.0 - localX);
+  float borderDistY = min(octFrac, 1.0 - octFrac);
+
+  // The X thresholds are much smaller to keep the physical pixel thickness even
+  float borderMaskX = 1.0 - smoothstep(0.005, 0.015, borderDistX); 
+  float borderMaskY = 1.0 - smoothstep(0.02, 0.06, borderDistY);   
+
+  // Combine the two masks (max ensures the corners connect perfectly)
+  return max(borderMaskX, borderMaskY);
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / u_resolution;
   LayoutInfo layoutInfo = getLayout(uv);
@@ -252,6 +268,7 @@ void main() {
 
   // Normalized temporal average across the rendered shutter window
   float avgStrobe = totalStrobe / float(max(u_numBlocks, 1));
+  float avgBrightness = totalBrightness / float(max(u_numBlocks, 1));
 
   // Composite final fragment color:
   // Base key background + glowing moving strobe bars + subtle amber center
@@ -259,6 +276,10 @@ void main() {
   vec3 color = baseColor * octLine;
   color += COLOR_STROBE_BAR * avgStrobe * octLine;
   color = mix(color, COLOR_CENTER_TICK, centerTick * 0.35);
+
+  // Apply the dynamic border glow
+  float borderMask = getBorderMask(layoutInfo.localX, octFrac);
+  color = mix(color, COLOR_STROBE_BAR, borderMask * avgBrightness);
 
   fragColor = vec4(color, 1.0);
 }
