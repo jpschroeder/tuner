@@ -89,7 +89,8 @@ button:disabled {
   color: #aaa;
 }
 
-.control-group input[type="number"] {
+.control-group input[type="number"],
+.control-group select {
   background: #2a2a2a;
   border: 1px solid var(--border-color);
   color: var(--text-color);

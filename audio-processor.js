@@ -52,6 +52,7 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
     // Tuner parameters (initialized from processorOptions, updated via setParams)
     this.basePitch = opts.a4; // Reference pitch for A4 in Hz
     this.centsOffset = opts.cents; // Global tuning offset in cents
+    this.stretchOffsets = opts.stretchOffsets; // Stretch tuning cents offsets per channel
     this.sensitivityDb = opts.sensitivity; // Mic sensitivity offset (lowers effective noise floor)
     this.dynamicRangeDb = opts.dynamicRange; // Dynamic range span for mapping dB to brightness
     this.peakDecay = 0.95;
@@ -137,6 +138,10 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
           this.centsOffset = data.cents;
           needPitchUpdate = true;
         }
+        if (data.stretchOffsets !== this.stretchOffsets) {
+          this.stretchOffsets = data.stretchOffsets;
+          needPitchUpdate = true;
+        }
         if (data.sensitivity !== this.sensitivityDb) {
           this.sensitivityDb = data.sensitivity;
           needThresholdUpdate = true;
@@ -186,8 +191,9 @@ class StrobeAudioProcessor extends AudioWorkletProcessor {
       // f = basePitch * 2^((oct - 4) + (noteIdx - 9) / 12)
       const baseHz = basePitch * Math.pow(2.0, oct - 4 + (noteIdx - 9) / 12.0);
 
-      // Apply cents offset: f_tuned = baseHz * 2^(cents / 1200)
-      const hz = baseHz * Math.pow(2.0, centsOffset / 1200.0);
+      // Apply cents offset and stretch tuning offset: f_tuned = baseHz * 2^((cents + stretch) / 1200)
+      const hz =
+        baseHz * Math.pow(2.0, (centsOffset + this.stretchOffsets[k]) / 1200.0);
       this.targetHzs[k] = hz;
     }
 

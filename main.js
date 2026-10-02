@@ -1,5 +1,7 @@
 // main.js - Strobe Tuner Main Controller & WebGL2 Motion Blur Renderer
 //
+import { STRETCH_TUNINGS } from "./stretch_tunings.js";
+//
 // ==============================================================================
 // ARCHITECTURE OVERVIEW:
 // 1. Lock-Free Zero-Copy Audio Pipeline:
@@ -296,6 +298,7 @@ async function startAudio() {
     const cents = ui.cents.valueAsNumber;
     const sensitivity = ui.sens.valueAsNumber;
     const dynamicRange = ui.dyn.valueAsNumber;
+    const stretchOffsets = STRETCH_TUNINGS[ui.stretch.value];
 
     // Instantiate AudioWorkletNode, passing SharedArrayBuffer and parameters directly via processorOptions
     strobeNode = new AudioWorkletNode(audioCtx, "strobe-audio-processor", {
@@ -308,6 +311,7 @@ async function startAudio() {
         cents,
         sensitivity,
         dynamicRange,
+        stretchOffsets,
       },
     });
 
@@ -345,6 +349,7 @@ function syncParams() {
   const cents = ui.cents.valueAsNumber;
   const sensitivity = ui.sens.valueAsNumber;
   const dynamicRange = ui.dyn.valueAsNumber;
+  const stretchOffsets = STRETCH_TUNINGS[ui.stretch.value];
 
   ui.centsVal.textContent =
     cents > 0 ? `+${cents.toFixed(1)}` : cents.toFixed(1);
@@ -360,6 +365,7 @@ function syncParams() {
     cents,
     sensitivity,
     dynamicRange,
+    stretchOffsets,
   });
 }
 
@@ -370,6 +376,7 @@ function setupUI() {
   ui.startBtn = document.getElementById("start-btn");
   ui.a4 = document.getElementById("a4-freq");
   ui.cents = document.getElementById("cents-offset");
+  ui.stretch = document.getElementById("stretch-tuning");
   ui.sens = document.getElementById("mic-sensitivity");
   ui.dyn = document.getElementById("dynamic-range");
   ui.centsVal = document.getElementById("cents-val");
@@ -382,9 +389,10 @@ function setupUI() {
     }
   });
 
-  [ui.a4, ui.cents, ui.sens, ui.dyn].forEach((el) => {
+  [ui.a4, ui.cents, ui.stretch, ui.sens, ui.dyn].forEach((el) => {
     el.addEventListener("input", syncParams);
   });
+  ui.stretch.addEventListener("change", syncParams);
 }
 
 // Bootstrap application on page load
