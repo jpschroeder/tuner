@@ -59,14 +59,20 @@ A high-performance digital chromatic strobe tuner with continuous analytical mot
 
 Modern browsers require Cross-Origin Isolation (`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`) to enable `SharedArrayBuffer`.
 
+### Local Development
 1. Start the local server:
    ```bash
    make serve
    # or: node server.js
    ```
-
 2. Navigate to [http://localhost:8000](http://localhost:8000) in a supported browser (Chrome, Edge, Firefox).
 3. Click **Start Audio** and grant microphone permissions.
+
+### GitHub Pages Deployment
+The repository includes a lightweight, self-contained `coi.js` Service Worker that enables Cross-Origin Isolation on static hosts without server configuration.
+1. Enable GitHub Pages in your repository under **Settings > Pages**.
+2. Select **Source: Deploy from a branch** (`main` / `/root`).
+3. On first visit, `coi.js` registers the Service Worker, reloads the page once, and enables `SharedArrayBuffer`.
 
 ---
 
