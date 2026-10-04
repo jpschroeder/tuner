@@ -176,15 +176,16 @@ LayoutInfo getLayout(vec2 uv) {
 
 /**
  * Calculates an anti-aliased border mask for a note cell, applying independent
- * X and Y thresholds to compensate for the non-square aspect ratio of the layout grid.
+ * X and Y thresholds to compensate for the non-square aspect ratio of the
+ * layout grid.
  */
 float getBorderMask(float localX, float octFrac) {
   float borderDistX = min(localX, 1.0 - localX);
   float borderDistY = min(octFrac, 1.0 - octFrac);
 
   // The X thresholds are much smaller to keep the physical pixel thickness even
-  float borderMaskX = 1.0 - smoothstep(0.005, 0.015, borderDistX); 
-  float borderMaskY = 1.0 - smoothstep(0.02, 0.06, borderDistY);   
+  float borderMaskX = 1.0 - smoothstep(0.005, 0.015, borderDistX);
+  float borderMaskY = 1.0 - smoothstep(0.02, 0.06, borderDistY);
 
   // Combine the two masks (max ensures the corners connect perfectly)
   return max(borderMaskX, borderMaskY);
