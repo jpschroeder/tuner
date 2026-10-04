@@ -7,7 +7,8 @@ const PORT = 8000;
 
 http
   .createServer((req, res) => {
-    let filePath = req.url === "/" ? "/index.html" : req.url;
+    const cleanUrl = req.url.split("?")[0];
+    let filePath = cleanUrl === "/" ? "/index.html" : cleanUrl;
     filePath = path.join(__dirname, filePath);
 
     const ext = path.extname(filePath);

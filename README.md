@@ -51,7 +51,7 @@ A high-performance digital chromatic strobe tuner with continuous analytical mot
 - **A4 Calibration**: Adjustable reference pitch from 400.0 Hz to 480.0 Hz (default: 440.0 Hz).
 - **Stretch Tuning Presets**: Acoustic piano stretch tuning profiles (*Concert Grand, Studio Grand, Average, Small Grand, Upright, Vertical, Console, Spinet*) and standard *Equal Temperament*.
 - **Fine Cents Offset**: Global offset from $-50.0$ to $+50.0$ cents.
-- **Microphone Sensitivity & Dynamic Range**: Adjustable input gain ($-30$ to $+30$ dB) and visual dynamic range ($6$ to $60$ dB).
+- **Microphone Sensitivity & Dynamic Range**: Adjustable input gain ($-60$ to $+60$ dB) and visual dynamic range ($6$ to $60$ dB).
 
 ---
 

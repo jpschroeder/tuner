@@ -30,6 +30,7 @@ const TOTAL_CHANNELS = 96; // 8 octaves * 12 notes per octave
 const RING_BLOCKS = 128; // Circular ring buffer depth in 128-sample blocks
 const HEADER_SIZE = 16; // 16 slots (64 bytes) for atomic metadata at buffer start
 const MAX_BATCH_BLOCKS = 16; // Maximum blocks to integrate in one visual frame (~42ms)
+const VERSION = "1"; // Manual cache-busting version
 
 // Total SharedArrayBuffer footprint:
 // 16 Int32 slots + (128 blocks * 96 channels * 4 floats/channel * 4 bytes/float) = 196,672 bytes (~192 KB)
@@ -90,8 +91,8 @@ async function initWebGL() {
   let vsSource, fsSource;
   try {
     [vsSource, fsSource] = await Promise.all([
-      loadShader("vertex.glsl"),
-      loadShader("fragment.glsl"),
+      loadShader(`vertex.glsl?v=${VERSION}`),
+      loadShader(`fragment.glsl?v=${VERSION}`),
     ]);
   } catch (err) {
     console.error("Shader loading failed:", err);
@@ -280,7 +281,7 @@ async function startAudio() {
     });
 
     // Load and register the AudioWorklet processor module
-    await audioCtx.audioWorklet.addModule("audio-processor.js");
+    await audioCtx.audioWorklet.addModule(`audio-processor.js?v=${VERSION}`);
 
     // Allocate the lock-free SharedArrayBuffer ring buffer
     sab = new SharedArrayBuffer(SAB_BYTE_LENGTH);
